@@ -24,6 +24,9 @@ pub async fn main() -> anyhow::Result<()> {
     env_logger::init();
 // create a new RPC client and Raydium AMM executor,and the RPC_URL is read from the 
 // environment variable "RPC_URL"(which should be set in the .env file)
+// RPC_URL is the URL of the Solana RPC endpoint that the client will connect to,it is usually
+// in the format of "https://api.mainnet-beta.solana.com" or similar,depending on the network
+    // you are connecting to
     let client = Arc::new(RpcClient::new(std::env::var("RPC_URL")?));
     let executor = RaydiumAmm::new(
         Arc::clone(&client),

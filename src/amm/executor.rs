@@ -38,7 +38,24 @@ pub struct RaydiumAmmExecutorOpts {
     pub load_keys_by_api: Option<bool>,
 }
 
+impl RaydiumAmmExecutorOpts {
+    pub fn new() -> Self {
+        Self {
+            priority_fee: None,
+            cu_limits: None,
+            wrap_and_unwrap_sol: Some(true),
+            load_keys_by_api: Some(true),
+        }
+    }
+    
+}
 impl RaydiumAmm {
+    // 构建一个新的 RaydiumAmm 实例
+    // 该函数接受一个 Arc<RpcClient>、RaydiumAmmExecutorOpts 和 ApiV3Client 作为参数
+    //  Arc<RpcClient> 用于与 Solana 区块链进行交互,Arc 是一个线程安全的智能指针,用于在多个线程之间共享数据,这样RpcClient 可以在多个线程中安全地使用
+    // RaydiumAmmExecutorOpts 是 Raydium AMM 执行器的配置选项,包括优先费用、计算单位限制、是否包装和解包 SOL 以及是否通过 API 加载密钥
+    // 这样设计可以使 RaydiumAmm 的实例化更加灵活,允许用户根据自己的需求配置执行器的行为,方便后期维护和扩展,而不必修改 Raydium 的字段和方法
+    // ApiV3Client 用于与 Raydium API 进行交互,获取有关池和市场的信息
     pub fn new(client: Arc<RpcClient>, config: RaydiumAmmExecutorOpts, api: ApiV3Client) -> Self {
         let RaydiumAmmExecutorOpts {
             priority_fee,
@@ -59,14 +76,29 @@ impl RaydiumAmm {
         }
     }
 
+    // quote 方法用于获取 Raydium AMM 的交换报价
+    // 它接受一个 SwapInput 结构体作为参数,该结构体包含输入代币的 mint 地址、输出代币的 mint 地址、滑点、交换金额、执行模式和市场信息
+    // 返回一个 RaydiumAmmQuote 结构体,该结构体包含交换的详细信息,包括市场地址、输入和输出代币的 mint 地址、交换金额、其他金额、滑点等
+    // 如果输入代币和输出代币相同,则返回一个错误
+    // 如果 swap_input.market 为 None,则通过 API 获取市场信息
+    // 如果 swap_input.market 已经有值,则直接使用它
+    // 通过检查输入和输出代币的 mint 地址是否匹配来决定交换的方向
+    // 如果输入代币的 mint 地址与 AMM 的 coin mint 匹配,则交换方向为 Coin2PC,否则为 PC2Coin
+    // 通过调用 raydium_library::amm::swap_with_slippage 函数计算交换的其他金额和其他金额阈值
+    // 最后返回一个 RaydiumAmmQuote 结构体,包含交换的详细信息       
+
     pub async fn quote(&self, swap_input: &SwapInput) -> anyhow::Result<RaydiumAmmQuote> {
+        // 为什么要检查输入和输出代币是否相同？
+        // 因为在交换过程中，输入代币和输出代币必须是不同的，否则没有意义。
         if swap_input.input_token_mint == swap_input.output_token_mint {
             return Err(anyhow!(
                 "Input token cannot equal output token {}",
                 swap_input.input_token_mint
             ));
         }
-
+// 通过检查 swap_input.market 是否为 None 来决定是否需要通过 API 获取市场信息
+        // 如果 swap_input.market 为 None，则通过 API 获取市场信息
+        // 如果 swap_input.market 已经有值，则直接使用它
         let mut pool_id = swap_input.market;
         if pool_id.is_none() {
             let response: ApiV3PoolsPage<ApiV3StandardPool> = self
@@ -272,48 +304,69 @@ impl RaydiumAmm {
         })
     }
 
+    // 定义一个异步函数swap_instructions，用于生成交换指令
     pub async fn swap_instructions(
         &self,
+        // 输入公钥
         input_pubkey: Pubkey,
+        // 交换报价
         output: RaydiumAmmQuote,
+        // 交换配置覆盖
         overrides: Option<&SwapConfigOverrides>,
     ) -> anyhow::Result<Vec<solana_sdk::instruction::Instruction>> {
+        // 调用make_swap函数，生成交换指令构建器
         let builder = self.make_swap(input_pubkey, output, overrides).await?;
+        // 构建交换指令
         builder.build_instructions()
     }
 
+    // 定义一个异步函数swap_transaction，用于交换交易
     pub async fn swap_transaction(
+        // 接收一个self参数，表示当前对象
         &self,
+        // 接收一个input_pubkey参数，表示输入公钥
         input_pubkey: Pubkey,
+        // 接收一个output参数，表示输出
         output: RaydiumAmmQuote,
+        // 接收一个overrides参数，表示覆盖配置
         overrides: Option<&SwapConfigOverrides>,
     ) -> anyhow::Result<VersionedTransaction> {
+        // 调用make_swap函数，生成交换交易
         let builder = self.make_swap(input_pubkey, output, overrides).await?;
+        // 构建交易
         builder.build_transaction(Some(&input_pubkey), None)
     }
 
+    // 更新配置
     pub fn update_config(&mut self, config: &SwapConfig) {
+        // 将传入的配置赋值给self的config
         self.config = *config;
     }
 
+    // 异步函数，用于创建交换指令
     async fn make_swap(
         &self,
-        input_pubkey: Pubkey,
-        output: RaydiumAmmQuote,
-        overrides: Option<&SwapConfigOverrides>,
-    ) -> anyhow::Result<SwapInstructionsBuilder> {
+        input_pubkey: Pubkey, // 输入公钥
+        output: RaydiumAmmQuote, // 交换输出
+        overrides: Option<&SwapConfigOverrides>, // 交换配置覆盖
+    ) -> anyhow::Result<SwapInstructionsBuilder> { // 返回交换指令构建器
+        // 获取优先费用
         let priority_fee = overrides
             .and_then(|o| o.priority_fee)
             .or(self.config.priority_fee);
+        // 获取计算单元限制
         let cu_limits = overrides
             .and_then(|o| o.cu_limits)
             .or(self.config.cu_limits);
+        // 获取是否需要包装和解包 SOL
         let wrap_and_unwrap_sol = overrides
             .and_then(|o| o.wrap_and_unwrap_sol)
             .or(self.config.wrap_and_unwrap_sol)
             .unwrap_or(true);
 
+        // 创建交换指令构建器
         let mut builder = SwapInstructionsBuilder::default();
+        // 处理令牌包装和解包以及账户创建
         let _associated_accounts = builder.handle_token_wrapping_and_accounts_creation(
             input_pubkey,
             wrap_and_unwrap_sol,
@@ -328,6 +381,7 @@ impl RaydiumAmm {
             spl_token::ID,
             None,
         )?;
+        // 创建交换指令
         let instruction = swap_instruction(
             &RAYDIUM_LIQUIDITY_POOL_V4_PROGRAM_ID,
             &output.amm_keys,
@@ -345,13 +399,17 @@ impl RaydiumAmm {
             output.other_amount_threshold,
             output.amount_specified_is_input,
         )?;
+        // 将交换指令添加到构建器中
         builder.swap_instruction = Some(instruction);
 
+        // 处理计算单元参数
         let compute_units = builder
             .handle_compute_units_params(cu_limits, &self.client, input_pubkey)
             .await?;
+        // 处理优先费用参数
         builder.handle_priority_fee_params(priority_fee, compute_units, input_pubkey)?;
 
+        // 返回交换指令构建器
         Ok(builder)
     }
 }
@@ -393,80 +451,141 @@ pub struct MarketKeys {
 }
 
 #[allow(clippy::too_many_arguments)]
+// 定义一个函数，用于生成交换指令
 fn swap_instruction(
+    // 交换指令的amm程序
     amm_program: &Pubkey,
+    // 交换指令的amm键
     amm_keys: &AmmKeys,
+    // 交换指令的市场键
     market_keys: &MarketKeys,
+    // 用户所有者
     user_owner: &Pubkey,
+    // 用户源地址
     user_source: &Pubkey,
+    // 用户目标地址
     user_destination: &Pubkey,
+    // 指定金额
     amount_specified: u64,
+    // 其他金额阈值
     other_amount_threshold: u64,
+    // 是否交换基础
     swap_base_in: bool,
 ) -> anyhow::Result<Instruction> {
+    // 如果是交换基础，则生成交换基础指令
     let swap_instruction = if swap_base_in {
         raydium_amm::instruction::swap_base_in(
+            // 交换指令的amm程序
             amm_program,
+            // 交换指令的amm池
             &amm_keys.amm_pool,
+            // 交换指令的amm权限
             &amm_keys.amm_authority,
+            // 交换指令的amm开放订单
             &amm_keys.amm_open_order,
+            // 交换指令的amm代币库
             &amm_keys.amm_coin_vault,
+            // 交换指令的amm代币库
             &amm_keys.amm_pc_vault,
+            // 交换指令的市场程序
             &amm_keys.market_program,
+            // 交换指令的市场
             &amm_keys.market,
+            // 交换指令的市场 bids
             &market_keys.bids,
+            // 交换指令的市场 asks
             &market_keys.asks,
+            // 交换指令的市场事件队列
             &market_keys.event_queue,
+            // 交换指令的市场代币库
             &market_keys.coin_vault,
+            // 交换指令的市场代币库
             &market_keys.pc_vault,
+            // 交换指令的市场库签名者键
             &market_keys.vault_signer_key,
+            // 用户源地址
             user_source,
+            // 用户目标地址
             user_destination,
+            // 用户所有者
             user_owner,
+            // 指定金额
             amount_specified,
+            // 其他金额阈值
             other_amount_threshold,
         )?
+    // 否则，生成交换基础指令
     } else {
         raydium_amm::instruction::swap_base_out(
+            // 交换指令的amm程序
             amm_program,
+            // 交换指令的amm池
             &amm_keys.amm_pool,
+            // 交换指令的amm权限
             &amm_keys.amm_authority,
+            // 交换指令的amm开放订单
             &amm_keys.amm_open_order,
+            // 交换指令的amm代币库
             &amm_keys.amm_coin_vault,
+            // 交换指令的amm代币库
             &amm_keys.amm_pc_vault,
+            // 交换指令的市场程序
             &amm_keys.market_program,
+            // 交换指令的市场
             &amm_keys.market,
+            // 交换指令的市场 bids
             &market_keys.bids,
+            // 交换指令的市场 asks
             &market_keys.asks,
+            // 交换指令的市场事件队列
             &market_keys.event_queue,
+            // 交换指令的市场代币库
             &market_keys.coin_vault,
+            // 交换指令的市场代币库
             &market_keys.pc_vault,
+            // 交换指令的市场库签名者键
             &market_keys.vault_signer_key,
+            // 用户源地址
             user_source,
+            // 用户目标地址
             user_destination,
+            // 用户所有者
             user_owner,
+            // 其他金额阈值
             other_amount_threshold,
+            // 指定金额
             amount_specified,
         )?
     };
 
+    // 返回交换指令
     Ok(swap_instruction)
 }
 
 impl From<&raydium_library::amm::MarketPubkeys> for MarketKeys {
+    // 从raydium_library::amm::MarketPubkeys类型转换为Self类型
     fn from(keys: &raydium_library::amm::MarketPubkeys) -> Self {
+        // 创建一个MarketKeys类型的实例
         MarketKeys {
+            // 将keys.event_q赋值给event_queue
             event_queue: *keys.event_q,
+            // 将keys.bids赋值给bids
             bids: *keys.bids,
+            // 将keys.asks赋值给asks
             asks: *keys.asks,
+            // 将keys.coin_vault赋值给coin_vault
             coin_vault: *keys.coin_vault,
+            // 将keys.pc_vault赋值给pc_vault
             pc_vault: *keys.pc_vault,
+            // 将keys.vault_signer_key赋值给vault_signer_key
             vault_signer_key: *keys.vault_signer_key,
         }
     }
 }
 impl From<&crate::api_v3::response::pools::standard::MarketKeys> for MarketKeys {
+    // 实现从&crate::api_v3::response::pools::standard::MarketKeys到MarketKeys的转换
     fn from(keys: &crate::api_v3::response::pools::standard::MarketKeys) -> Self {
+        // 从keys中获取market_event_queue、market_bids、market_asks、market_base_vault、market_quote_vault、market_authority的值
         MarketKeys {
             event_queue: keys.market_event_queue,
             bids: keys.market_bids,
@@ -478,16 +597,20 @@ impl From<&crate::api_v3::response::pools::standard::MarketKeys> for MarketKeys 
     }
 }
 impl TryFrom<&crate::api_v3::response::ApiV3StandardPoolKeys> for MarketKeys {
+    // 定义转换错误类型
     type Error = anyhow::Error;
 
+    // 实现TryFrom trait的try_from方法
     fn try_from(
         keys: &crate::api_v3::response::ApiV3StandardPoolKeys,
     ) -> Result<Self, Self::Error> {
+        // 获取market keys
         let keys = keys
             .keys
             .market
             .as_ref()
             .context("market keys should be present for amm")?;
+        // 将获取到的market keys转换为MarketKeys类型
         Ok(MarketKeys::from(keys))
     }
 }
@@ -495,32 +618,46 @@ impl TryFrom<&crate::api_v3::response::ApiV3StandardPoolKeys> for MarketKeys {
 impl TryFrom<&crate::api_v3::response::ApiV3StandardPoolKeys> for AmmKeys {
     type Error = anyhow::Error;
 
+    // 将ApiV3StandardPoolKeys类型转换为AmmKeys类型
     fn try_from(
         keys: &crate::api_v3::response::ApiV3StandardPoolKeys,
     ) -> Result<Self, Self::Error> {
+        // 获取market keys
         let market_keys = keys
             .keys
             .market
             .as_ref()
             .context("market keys should be present for amm")?;
         Ok(AmmKeys {
+            // 获取amm池id
             amm_pool: keys.id,
+            // 获取amm币种mint地址
             amm_coin_mint: keys.mint_a.address,
+            // 获取amm代币mint地址
             amm_pc_mint: keys.mint_b.address,
+            // 获取amm权限
             amm_authority: keys.keys.authority,
+            // 获取amm目标订单
             amm_target: keys
                 .keys
                 .target_orders
                 .context("target orders should be present for amm")?,
+            // 获取amm币种vault
             amm_coin_vault: keys.vault.a,
+            // 获取amm代币vault
             amm_pc_vault: keys.vault.b,
+            // 获取ammlp mint地址
             amm_lp_mint: keys.keys.mint_lp.address,
+            // 获取amm开放订单
             amm_open_order: keys
                 .keys
                 .open_orders
                 .context("open orders should be present for amm")?,
+            // 获取市场程序id
             market_program: market_keys.market_program_id,
+            // 获取市场id
             market: market_keys.market_id,
+            // 随机nonce
             nonce: 0, // random
         })
     }
