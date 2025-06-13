@@ -181,8 +181,17 @@ impl RaydiumAmm {
         let accounts = array_ref![rsps, 0, 7];
         let [amm_account, amm_target_account, amm_pc_vault_account, amm_coin_vault_account, amm_open_orders_account, market_account, market_event_q_account] =
             accounts;
+        let amm_account_unpacked = match amm_account.as_ref() {
+            Some(account) => account,
+            None => {
+                return Err(anyhow!(
+                    "Failed to get amm account for pool {}",
+                    pool_id
+                ));
+            }
+        };
         let amm: raydium_amm::state::AmmInfo = transmute_one_pedantic::<super::amm_info::AmmInfo>(
-            transmute_to_bytes(&amm_account.as_ref().unwrap().clone().data),
+            transmute_to_bytes(&amm_account_unpacked.clone().data),
         )
         .map_err(|e| e.without_src())?
         .into();
