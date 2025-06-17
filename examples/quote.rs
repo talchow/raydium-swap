@@ -27,7 +27,7 @@ pub async fn main() -> anyhow::Result<()> {
 // RPC_URL is the URL of the Solana RPC endpoint that the client will connect to,it is usually
 // in the format of "https://api.mainnet-beta.solana.com" or similar,depending on the network
     // you are connecting to
-    let client = Arc::new(RpcClient::new("https://api.testnet.solana.com".to_string()));
+    let client = Arc::new(RpcClient::new("https://api.devtnet.solana.com".to_string()));
     let executor = RaydiumAmm::new(
         Arc::clone(&client),
         RaydiumAmmExecutorOpts::default(),
